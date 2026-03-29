@@ -1,1 +1,1 @@
-from .reward import RewardH1, RewardH2, RewardH3
+from .reward import RewardH1, RewardH2, RewardH3,RewardH4

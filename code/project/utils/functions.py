@@ -4,7 +4,7 @@ import numpy as np
 import logging
 from datetime import datetime
 import torch
-from project.reward import RewardH1, RewardH2, RewardH3
+from project.reward import RewardH1, RewardH2, RewardH3, RewardH4
 
 
 def strip_extension(filename):
@@ -36,6 +36,8 @@ def get_reward(name):
         return RewardH2()
     if name.lower() == "reward_h3":
         return RewardH3()
+    if name.lower() == "reward_h4":
+        return RewardH4()
     else:
         raise ValueError(f"Unsupported reward function '{name}'.")
 

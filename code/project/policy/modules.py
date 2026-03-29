@@ -19,67 +19,48 @@ def get_norm_layer(norm_type='none'):
 
 
 class TreeGateBranchingNet(nn.Module):
-    def __init__(self, branch_size, tree_state_size, dim_reduce_factor, infimum=8, norm='none', depth=2, hidden_size=128):
+    def __init__(self, branch_size, tree_state_size, dim_reduce_factor=2, infimum=8, norm='layer', depth=2, hidden_size=128):
         super().__init__()
-        norm_layer = get_norm_layer(norm)
-        self.branch_size = branch_size
-        self.tree_state_size = tree_state_size
-        self.dim_reduce_factor = dim_reduce_factor
-        self.infimum = infimum
-        self.depth = depth
-        self.hidden_size = hidden_size
-
-        self.n_layers = 0
-        unit_count = infimum
-        while unit_count < branch_size:
-            unit_count *= dim_reduce_factor
-            self.n_layers += 1
-        self.n_units_dict = {}
-
-        self.BranchingNet = nn.ModuleList()
-        input_dim = hidden_size
-        for i in range(self.n_layers):
-            output_dim = max(int(input_dim / dim_reduce_factor), 1)
-            self.n_units_dict[i] = input_dim
-            if i < self.n_layers - 1:
-                layer = [nn.Linear(input_dim, output_dim), norm_layer(output_dim), nn.ReLU(True)]
-            else:
-                layer = [nn.Linear(input_dim, output_dim)]
-            input_dim = output_dim
-            self.BranchingNet.append(nn.Sequential(*layer))
-
-        self.GatingNet = nn.Sequential()
-        self.n_attentional_units = sum(self.n_units_dict.values())
-        if depth == 1:
-            self.GatingNet.add_module('gate_linear', nn.Linear(tree_state_size, self.n_attentional_units))
-            self.GatingNet.add_module('gate_sig', nn.Sigmoid())
-        else:
-            self.GatingNet.add_module('gate_linear1', nn.Linear(tree_state_size, hidden_size))
-            self.GatingNet.add_module('gate_relu1', nn.ReLU(True))
-            for i in range(depth - 2):
-                self.GatingNet.add_module(f'gate_linear{i+2}', nn.Linear(hidden_size, hidden_size))
-                self.GatingNet.add_module(f'gate_relu{i+2}', nn.ReLU(True))
-            self.GatingNet.add_module('gate_linear_last', nn.Linear(hidden_size, self.n_attentional_units))
-            self.GatingNet.add_module('gate_sig', nn.Sigmoid())
+        # 修复版：精简网络深度，避免小维度 LayerNorm 和指数级梯度消失
+        
+        # 1. 变量特征提取层 (保持在安全的大维度 hidden_size)
+        self.feature_net = nn.Sequential(
+            nn.Linear(branch_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size)
+        )
+        
+        # 2. Tree Gate 生成器 (生成一层的全局注意力权重)
+        self.gate_net = nn.Sequential(
+            nn.Linear(tree_state_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Sigmoid() # 限制在 0-1 之间作为门控开关
+        )
+        
+        # 3. 最终打分层 (平滑降维输出标量分数，不加 LayerNorm)
+        self.scoring_layer = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(hidden_size // 2, 1)
+        )
 
     def forward(self, cands_state_mat, tree_state):
-        attn_weights = self.GatingNet(tree_state)
-        start_slice_idx = 0
-        for index, layer in enumerate(self.BranchingNet):
-            end_slice_idx = start_slice_idx + self.n_units_dict[index]
-            attn_slice = attn_weights[:, start_slice_idx:end_slice_idx]
-            if cands_state_mat.dim() == 3:
-                cands_state_mat = cands_state_mat * attn_slice.unsqueeze(1)
-            else:
-                cands_state_mat = cands_state_mat * attn_slice
-            cands_state_mat = layer(cands_state_mat)
-            start_slice_idx = end_slice_idx
-        if cands_state_mat.size(-1) == 1:
-            return cands_state_mat.squeeze(-1)
-        else:
-            # if 3D -> mean over candidates; if 2D -> mean over features
-            dim = 1 if cands_state_mat.dim() == 3 else -1
-            return cands_state_mat.mean(dim=dim)
+        # cands_state_mat: [B, L, H]
+        # 1. 提炼变量特征
+        cands_feat = self.feature_net(cands_state_mat)
+        
+        # 2. 生成 Tree Gate: [B, H] -> [B, 1, H]
+        gate = self.gate_net(tree_state).unsqueeze(1)
+        
+        # 3. Tree Gating 核心机制：用当前的树状态去“过滤/激活”候选变量特征
+        gated_cands = (cands_feat * gate) +  cands_feat
+        
+        # 4. 独立打分: [B, L, 1] -> [B, L]
+        scores = self.scoring_layer(gated_cands).squeeze(-1)
+        
+        return scores
 
 
 class BiMatchingNet(nn.Module):
@@ -119,4 +100,6 @@ class BiMatchingNet(nn.Module):
 
         attn_weight = torch.sigmoid(self.linear3_1(S_tc) + self.linear3_2(S_ct))  # [B,L,E]
         M_tc = attn_weight * S_tc + (1 - attn_weight) * S_ct
-        return M_tc
+        out_feat = var_feat + M_tc
+
+        return out_feat
