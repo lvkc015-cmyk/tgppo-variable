@@ -671,10 +671,10 @@ def main():
                 traj_files = [f for f in os.listdir(traj_dir) if f.endswith('.pkl')]
             try:
                 if  traj_files:
-                    sample_size = 20
+                    sample_size = 50
                     sampled_files = random.sample(traj_files, min(sample_size, len(traj_files)))
                     
-                    for filename in sampled_files[:20]:
+                    for filename in sampled_files[:50]:
                         file_path = os.path.join(traj_dir, filename)
                         
                         if not os.path.exists(file_path):
@@ -702,7 +702,7 @@ def main():
                             continue
 
                 should_learn = False
-                if num_traj_collected >= last_learn_traj_count + 20 and len(agent.memory) >= targs.batch_size:
+                if num_traj_collected >= last_learn_traj_count + 50 and len(agent.memory) >= targs.batch_size:
                     should_learn = True
                 
                 # 条件 B: Worker 全部结束，把最后不足 15 个的数据也练了
@@ -757,7 +757,8 @@ def main():
 
         # Optional interim validation  可选验证（不参与训练）
         val_score = None
-        if val_instances:
+        val_every = 10
+        if val_instances and (it % val_every == 0 or it == targs.train_iterations):
             final_w = serialize_weights(actor, critic)
             vjobs = [(inst, s, final_w, targs, info_dict) for inst in val_instances for s in (args.val_seeds or [0])]
             vmetrics = run_parallel_in_batches(

@@ -39,7 +39,7 @@ class Environment:
     #求解完成判断
     def _is_solved(self):
         status = self.model.getStatus()
-        return status in ["optimal", "infeasible", "unbounded", "timelimit"]
+        return status in ["optimal", "infeasible", "unbounded", "timelimit","nodelimit", "userinterrupt"]
 
     # 一次 episode 的初始化
     def reset(self, instance, cutoff=None, baseline_nodes=None, baseline_gap=None,
@@ -82,11 +82,11 @@ class Environment:
             
             #奖励函数参数设置 H3
             if self.reward_func.__class__.__name__ == 'RewardH4':
-                self.reward_func.reset(self.model, time_limit=900)
+                self.reward_func.reset(self.model, time_limit=600)
             else:
 
                 self.reward_func.reset(baseline_nodes=bn, baseline_gap=bg, baseline_pdi=bp,
-                                   solver_status=bs, time_limit=900, logger=self.logger)
+                                   solver_status=bs, time_limit=600, logger=self.logger)
             
                                    
 

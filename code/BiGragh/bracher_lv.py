@@ -88,48 +88,13 @@ class Brancher(scip.Branchrule):
             bounds = T.tensor([[lb, -1 * ub]], device=self.device).float()
             depth = T.tensor([curr_node.getDepth()], device=self.device).float()
 
-            # ================== 变量取值验证审计 ==================
-            # print(f"\n" + "!"*20 + " 数据流验证 " + "!"*20)
-            # data_to_check = {
-            #     "var_feats": var_feats,
-            #     "cons_feats": cons_feats,
-            #     "edge_index": edge_index,
-            #     "edge_attr": edge_attr,
-            #     "bounds": bounds,
-            #     "depth": depth
-            # }
-
-            # for name, tensor in data_to_check.items():
-            #     if tensor is None:
-            #         print(f"CRITICAL: {name} 是 None!")
-            #     elif isinstance(tensor, T.Tensor):
-            #         # 打印形状，重点看第一维是不是 0
-            #         print(f"CHECK: {name:12} | Shape: {list(tensor.shape)} | Device: {tensor.device}")
-            #         if tensor.numel() == 0:
-            #             print(f"   --> WARNING: {name} 元素数量为 0 (空张量)!")
-            #     else:
-            #         print(f"CHECK: {name:12} | Value: {tensor} (非 Tensor 类型)")
-
-            # # 针对你之前的 Size(400) vs Size(0) 报错，做一个强制断言提示
-            # if var_feats.shape[0] > 0 and cons_feats.shape[0] == 0:
-            #     print(f"MATCH FOUND: 发现【有变量但没约束】的情况！这就是导致 GNN 崩溃的原因。")
-            # print("!"*50 + "\n")
-            # ====================================================
-
 
             # 6. 归一化 (直接传入局部图数据)
             norm_cons, norm_edge_idx, norm_edge_attr, norm_var, norm_bounds, _ = normalize_graph(
-                cons_feats, edge_index, edge_attr, 
-                var_feats, bounds, depth
+                cons_feats.clone(), edge_index.clone(), edge_attr.clone(), 
+                var_feats.clone(), bounds.clone(), depth.clone()
             )
-            #  # 6. 归一化 (调用项目提供的 utils.py)
-            # norm_cons, norm_edge_idx, norm_edge_attr, norm_var, norm_bounds, _ = normalize_graph(
-            #     cons_feats.clone(), edge_index.clone(), edge_attr.clone(), 
-            #     var_feats.clone(), bounds.clone(), depth.clone()
-            # )
-
-            ####################################################################
-
+          
 
             # 转格式
             if isinstance(cands_state_mat, np.ndarray):
