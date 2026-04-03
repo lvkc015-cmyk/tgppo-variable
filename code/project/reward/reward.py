@@ -169,16 +169,16 @@ class RewardH3:
     def __init__(self, logger=None, scale=2.0):
         self.logger = logger
         self.scale = scale
-        self.reset(1.0, 0.0, 1.0, "timelimit", 900.0, logger)
+        self.reset(1.0, 0.0, 1.0, "timelimit", 600.0, logger)
 
-    def reset(self, baseline_nodes, baseline_gap, baseline_pdi, solver_status, time_limit=900.0, logger=None):
+    def reset(self, baseline_nodes, baseline_gap, baseline_pdi, solver_status, time_limit=600.0, logger=None):
         # 问题基线节点数，越大说明问题越难
         self.B = max(float(baseline_nodes or 1.0), 1.0)
         self.logB = math.log1p(self.B)
         self.baseline_gap = float(baseline_gap or 0.0)
         self.baseline_pdi = max(float(baseline_pdi or 1.0), 1.0)
         self.solver_status = solver_status or "timelimit"
-        self.time_limit = max(float(time_limit or 900.0), 1.0)
+        self.time_limit = max(float(time_limit or 600.0), 1.0)
         self.logger = logger or self.logger
         self.prev_nodes = 0
         self.prev_gap = float('inf')
@@ -277,13 +277,15 @@ class RewardH3:
             bonus = 1.0 + 3.0 * speedup
         elif status in ("infeasible", "unbounded"): #没找到可行解
             bonus = 0.8 + 2.0 * speedup
-        elif status == "timelimit":  #达到截止时间
-            bonus = 0.5 * speedup + 0.3 * gap_gain + 0.2 * pdi_gain
+        elif status in ("timelimit", "nodelimit", "userinterrupt"):  #达到截止时间
+            # bonus = 0.5 * speedup + 0.3 * gap_gain + 0.2 * pdi_gain
+            bonus = -1.0 + 0.6 * max(0.0, gap_gain) + 0.4 * max(0.0, pdi_gain)
         else: #其他情况
-            bonus = 0.3 * speedup
+            # bonus = 0.3 * speedup
+            bonus = -1.0
         # if self.logger:
         #     self.logger.info(f"H3 terminal: status={status}, speedup={speedup:.3f}, gap_gain={gap_gain:.3f}, pdi_gain={pdi_gain:.3f}, bonus={bonus:.3f}")
-        return float(bonus)
+        return float(np.clip(bonus, -5.0, 5.0))
 
 
 
@@ -293,9 +295,9 @@ class RewardH4:
         self.logger = logger
         self.scale = scale
         # 初始默认重置
-        self._internal_reset(1000, 1.0, 900.0)
+        self._internal_reset(1000, 1.0, 600.0)
 
-    def reset(self, model, time_limit=900.0):
+    def reset(self, model, time_limit=600.0):
         # 1. 获取静态规模：非零元数量 (NZ) 所有约束矩阵里“非零系数”的总个数
         # nz = model.getNNonzeros()
 
@@ -340,47 +342,134 @@ class RewardH4:
         self.prev_pb = None
         self.prev_db = None
 
-    def _dynamic_node_penalty(self, delta_nodes, delta_gap):
+    # def _dynamic_node_penalty(self, delta_nodes, delta_gap):
        
-        if delta_nodes <= 0:
-            return 0.0  # 没有生成新节点，无惩罚
+    #     if delta_nodes <= 0:
+    #         return 0.0  # 没有生成新节点，无惩罚
             
-        # 1. 计算当前步的 Gap 改善比例 (相对于初始 Gap)
-        relative_improvement = max(0.0, delta_gap) / max(self.first_gap, 1e-6)
+    #     # 1. 计算当前步的 Gap 改善比例 (相对于初始 Gap)
+    #     relative_improvement = max(0.0, delta_gap) / max(self.first_gap, 1e-6)
         
-        # 2. 原谅机制 (Forgiveness)：
-        # 如果 Gap 有改善，降低对产生节点的惩罚。
-        # 放大系数 50.0 意味着：只要 Gap 相对初始值下降了 2% (0.02 * 50 = 1.0)，
-        # tanh(1) 约等于 0.76，即免除 76% 的节点惩罚。
-        forgiveness = _safe_tanh(relative_improvement * 50.0)
+    #     # 2. 原谅机制 (Forgiveness)：
+    #     # 如果 Gap 有改善，降低对产生节点的惩罚。
+    #     # 放大系数 50.0 意味着：只要 Gap 相对初始值下降了 2% (0.02 * 50 = 1.0)，
+    #     # tanh(1) 约等于 0.76，即免除 76% 的节点惩罚。
+    #     forgiveness = _safe_tanh(relative_improvement * 50.0)
         
-        # “无用节点”的比例
-        wasted_ratio = 1.0 - forgiveness
+    #     # “无用节点”的比例
+    #     wasted_ratio = 1.0 - forgiveness
         
-        # 3. 动态单步预算 (Step Budget)：规模越小，单步能容忍的节点数越多
-        nz_scale = math.log10(max(self.nz, 100))
-        # 假设 NZ=100 (规模极小)，单步预算约 2500 节点
-        # 假设 NZ=1,000,000 (规模极大)，单步预算约 833 节点
-        step_budget = 5000.0 / nz_scale 
+    #     # 3. 动态单步预算 (Step Budget)：规模越小，单步能容忍的节点数越多
+    #     nz_scale = math.log10(max(self.nz, 100))
+    #     # 假设 NZ=100 (规模极小)，单步预算约 2500 节点
+    #     # 假设 NZ=1,000,000 (规模极大)，单步预算约 833 节点
+    #     step_budget = 5000.0 / nz_scale 
         
-        excess_nodes = delta_nodes / step_budget
+    #     excess_nodes = delta_nodes / step_budget
         
-        # 4. 计算最终惩罚
-        # 难度 d 越大 (问题越难)，stiffness 越小，惩罚越温和
-        stiffness = 0.5 * (1.0 - self.d * 0.5) 
+    #     # 4. 计算最终惩罚
+    #     # 难度 d 越大 (问题越难)，stiffness 越小，惩罚越温和
+    #     stiffness = 0.5 * (1.0 - self.d * 0.5) 
         
-        # 只有“超额”且“无用”的节点才会带来惩罚
-        penalty = -_safe_tanh(excess_nodes * wasted_ratio * stiffness, s=0.5)
+    #     # 只有“超额”且“无用”的节点才会带来惩罚
+    #     penalty = -_safe_tanh(excess_nodes * wasted_ratio * stiffness, s=0.5)
         
-        return penalty
+    #     return penalty
+
+    # def compute(self, model, done):
+    #     nodes = int(model.getNNodes())
+    #     # 时间进度
+    #     tfrac = min(max(model.getSolvingTime() / self.time_limit, 0.0), 1.0)
+        
+    #     gap = float(model.getGap())
+    #     # [OPT] 平滑处理无限大的 Gap：如果求解中途出现 inf，保持为上一步的 gap，防止进度奖励爆炸
+    #     if math.isinf(gap): 
+    #         gap = self.prev_gap 
+        
+    #     pdi = float(model.getPrimalDualIntegral())
+    #     pb = model.getPrimalbound()
+    #     db = model.getDualbound()
+
+    #     # 计算当步的状态变化量
+    #     delta_nodes = nodes - self.prev_nodes
+    #     delta_gap = self.prev_gap - gap
+    #     delta_pdi = max(0.0, pdi - self.prev_pdi)
+
+    #     # 1. 各项组件计算
+    #     r_nodes = self._dynamic_node_penalty(delta_nodes, delta_gap)
+        
+    #     # [OPT] Progress: 奖励相对于自身初始 Gap 的下降量
+    #     r_progress = 0.0
+    #     if self.prev_gap < float('inf'):
+    #         r_progress += _safe_tanh((self.prev_gap - gap) / self.first_gap, s=self.scale)
+        
+    #     # [OPT] Bound 改善：使用稳定的 first_gap 替代 abs(prev_pb) 作为归一化分母
+    #     stable_denom = max(self.first_gap, 1.0)
+    #     if self.prev_pb is not None and pb < self.prev_pb:
+    #         r_progress += 0.5 * _safe_tanh((self.prev_pb - pb) / stable_denom)
+    #     if self.prev_db is not None and db > self.prev_db:
+    #         r_progress += 0.5 * _safe_tanh((db - self.prev_db) / stable_denom)
+
+    #     # [OPT] PDI 增量计算：只惩罚这一步新增的对偶积分，而非历史累计总和
+    #     delta_pdi = max(0.0, pdi - self.prev_pdi)
+
+    #     # 2. 组合奖励 (Step Reward)
+    #     # 调整了 PDI 的惩罚力度，匹配 delta_pdi 的量级
+    #     step_reward = (
+    #         self.w_nodes * r_nodes +
+    #         self.w_gap   * (-_safe_tanh(gap / self.first_gap, s=0.5)) +
+    #         self.w_pdi   * (-_safe_tanh(delta_pdi / (self.first_gap * self.time_limit * 0.01 + 1e-6), s=0.5)) +
+    #         self.w_progress * r_progress
+    #     )
+    #     step_reward = float(np.clip(step_reward, -1.0, 1.0))
+
+    #     # [FIX] 核心 Bug 修复：在返回或处理 done 之前，必须更新所有 prev_* 状态！
+    #     self.prev_nodes = nodes
+    #     self.prev_gap = gap
+    #     self.prev_pdi = pdi
+    #     self.prev_pb = pb
+    #     self.prev_db = db
+
+    #     if not done:
+    #         return step_reward
+
+    #     # 3. 终止奖励 (Terminal Bonus)
+    #     status = model.getStatus()
+    #     time_saved_ratio = max(0.0, 1.0 - tfrac)
+    #     gap_reduced_ratio = max(0.0, (self.first_gap - gap) / self.first_gap)
+        
+    #     if status == "optimal":
+    #         bonus = 2.0 + 2.0 * time_saved_ratio
+    #     elif status in ["infeasible", "unbounded"]:
+    #         bonus = 2.0 + 2.0 * time_saved_ratio
+    #     elif status in ["timelimit", "nodelimit"]:
+    #         bonus = -1.0 + 1.5 * gap_reduced_ratio
+    #     else:
+    #         bonus = -1.0
+            
+    #     if self.logger:
+    #          self.logger.info(f"H4 terminal: status={status}, step_reward={step_reward:.3f}, bonus={bonus:.3f}")
+            
+    #     # [FIX] 核心 Bug 修复：必须加上当步的常规奖励 step_reward，否则模型在最后一步会丢失进度反馈
+    #     final_reward = float(np.clip(step_reward + bonus, -5.0, 5.0))
+    #     return final_reward
+
+    def _dynamic_node_penalty(self, delta_nodes, delta_gap):
+            # 【修改】极其简单暴力的步数成本：每产生一个新节点，就扣除一点微小的固定体力。
+            # 这逼迫模型必须用最少的节点解完树，而且不会因为树大而导致惩罚爆炸。
+            base_penalty = -0.01 * delta_nodes
+            
+            # 原谅机制依然保留：如果 Gap 改善了，免除部分节点惩罚
+            relative_improvement = max(0.0, delta_gap) / max(self.first_gap, 1e-6)
+            forgiveness = _safe_tanh(relative_improvement * 50.0)
+            
+            return base_penalty * (1.0 - forgiveness)
 
     def compute(self, model, done):
         nodes = int(model.getNNodes())
-        # 时间进度
         tfrac = min(max(model.getSolvingTime() / self.time_limit, 0.0), 1.0)
         
         gap = float(model.getGap())
-        # [OPT] 平滑处理无限大的 Gap：如果求解中途出现 inf，保持为上一步的 gap，防止进度奖励爆炸
         if math.isinf(gap): 
             gap = self.prev_gap 
         
@@ -388,7 +477,6 @@ class RewardH4:
         pb = model.getPrimalbound()
         db = model.getDualbound()
 
-        # 计算当步的状态变化量
         delta_nodes = nodes - self.prev_nodes
         delta_gap = self.prev_gap - gap
         delta_pdi = max(0.0, pdi - self.prev_pdi)
@@ -396,32 +484,26 @@ class RewardH4:
         # 1. 各项组件计算
         r_nodes = self._dynamic_node_penalty(delta_nodes, delta_gap)
         
-        # [OPT] Progress: 奖励相对于自身初始 Gap 的下降量
+        # 进度奖励 (只奖励改善的部分，绝不惩罚现有的 Gap)
         r_progress = 0.0
         if self.prev_gap < float('inf'):
             r_progress += _safe_tanh((self.prev_gap - gap) / self.first_gap, s=self.scale)
         
-        # [OPT] Bound 改善：使用稳定的 first_gap 替代 abs(prev_pb) 作为归一化分母
         stable_denom = max(self.first_gap, 1.0)
         if self.prev_pb is not None and pb < self.prev_pb:
             r_progress += 0.5 * _safe_tanh((self.prev_pb - pb) / stable_denom)
         if self.prev_db is not None and db > self.prev_db:
             r_progress += 0.5 * _safe_tanh((db - self.prev_db) / stable_denom)
 
-        # [OPT] PDI 增量计算：只惩罚这一步新增的对偶积分，而非历史累计总和
-        delta_pdi = max(0.0, pdi - self.prev_pdi)
-
         # 2. 组合奖励 (Step Reward)
-        # 调整了 PDI 的惩罚力度，匹配 delta_pdi 的量级
+        # 【核心修改】删除了 w_gap 对绝对 gap 的持续惩罚！
         step_reward = (
             self.w_nodes * r_nodes +
-            self.w_gap   * (-_safe_tanh(gap / self.first_gap, s=0.5)) +
             self.w_pdi   * (-_safe_tanh(delta_pdi / (self.first_gap * self.time_limit * 0.01 + 1e-6), s=0.5)) +
             self.w_progress * r_progress
         )
         step_reward = float(np.clip(step_reward, -1.0, 1.0))
 
-        # [FIX] 核心 Bug 修复：在返回或处理 done 之前，必须更新所有 prev_* 状态！
         self.prev_nodes = nodes
         self.prev_gap = gap
         self.prev_pdi = pdi
@@ -437,17 +519,18 @@ class RewardH4:
         gap_reduced_ratio = max(0.0, (self.first_gap - gap) / self.first_gap)
         
         if status == "optimal":
-            bonus = 2.0 + 2.0 * time_saved_ratio
+            # 【提升胜利果实】让成功解题的奖励足够大，覆盖掉之前的微小探索成本
+            bonus = 5.0 + 3.0 * time_saved_ratio
         elif status in ["infeasible", "unbounded"]:
-            bonus = 2.0 + 2.0 * time_saved_ratio
+            bonus = 5.0 + 3.0 * time_saved_ratio
         elif status in ["timelimit", "nodelimit"]:
-            bonus = -1.0 + 1.5 * gap_reduced_ratio
+            # 【修改惩罚】时间或节点耗尽的惩罚变重，明确告诉模型这不合格
+            bonus = -3.0 + 2.0 * gap_reduced_ratio
         else:
             bonus = -1.0
             
         if self.logger:
              self.logger.info(f"H4 terminal: status={status}, step_reward={step_reward:.3f}, bonus={bonus:.3f}")
             
-        # [FIX] 核心 Bug 修复：必须加上当步的常规奖励 step_reward，否则模型在最后一步会丢失进度反馈
-        final_reward = float(np.clip(step_reward + bonus, -5.0, 5.0))
+        final_reward = float(np.clip(step_reward + bonus, -10.0, 10.0))
         return final_reward

@@ -111,8 +111,8 @@ settings = {
 
 # limits in solvers
 scip_limits = {
-    'node_limit': -1,
-    'time_limit': 600.,
+    'node_limit': 1500,
+    'time_limit': 600.0,
 }
 
 state_dims = {
